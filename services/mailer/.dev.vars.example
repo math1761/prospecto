@@ -1,0 +1,4 @@
+RESEND_API_KEY=re_...
+FROM_EMAIL=JOHN@gmail.com
+FROM_NAME=JOHN
+API_BASE_URL=http://localhost:8787

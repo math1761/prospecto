@@ -1,0 +1,11 @@
+node_modules/
+package-lock.json
+yarn.lock
+.open-next/
+.next/
+.wrangler/
+dist/
+*.env
+.dev.vars
+.dev.vars.*
+!.dev.vars.example

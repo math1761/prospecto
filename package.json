@@ -1,0 +1,31 @@
+{
+  "name": "prospecto-mjm",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  },
+  "scripts": {
+    "dev": "docker compose up -d --wait && bash scripts/dev.sh",
+    "dev:app": "bash scripts/dev.sh",
+    "dev:workers": "pnpm exec wrangler dev -c services/api/wrangler.jsonc -c services/ai/wrangler.jsonc -c services/mailer/wrangler.jsonc",
+    "dev:frontend": "pnpm --filter frontend dev",
+    "dev:api": "pnpm --filter prospecto-api dev",
+    "dev:ai": "pnpm --filter prospecto-ai dev",
+    "dev:mailer": "pnpm --filter prospecto-mailer dev",
+    "build:frontend": "pnpm --filter frontend build",
+    "lint:frontend": "pnpm --filter frontend lint",
+    "cf:build": "pnpm --filter frontend cf:build",
+    "cf:preview": "pnpm --filter frontend cf:preview",
+    "cf:deploy": "pnpm --filter frontend cf:deploy",
+    "deploy:api": "pnpm --filter prospecto-api deploy",
+    "deploy:ai": "pnpm --filter prospecto-ai deploy",
+    "deploy:mailer": "pnpm --filter prospecto-mailer deploy",
+    "db:generate": "pnpm --filter prospecto-api db:generate",
+    "db:migrate": "pnpm --filter prospecto-api db:migrate",
+    "db:push": "pnpm --filter prospecto-api db:push",
+    "db:studio": "pnpm --filter prospecto-api db:studio"
+  }
+}

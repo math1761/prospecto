@@ -1,0 +1,55 @@
+{
+  "name": "prospecto-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2024-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "REPLACE_WITH_HYPERDRIVE_ID",
+      "localConnectionString": "postgresql://prospecto:prospecto@localhost:5436/prospecto"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "CACHE",
+      "id": "REPLACE_WITH_KV_ID",
+      "preview_id": "REPLACE_WITH_KV_PREVIEW_ID"
+    }
+  ],
+  "services": [
+    {
+      "binding": "AI_SERVICE",
+      "service": "prospecto-ai"
+    },
+    {
+      "binding": "MAILER_SERVICE",
+      "service": "prospecto-mailer"
+    }
+  ],
+  "vars": {
+    "API_BASE_URL": "https://prospecto-api.REPLACE_WITH_YOUR_SUBDOMAIN.workers.dev"
+  },
+  "queues": {
+    "producers": [
+      { "binding": "GENERATE_QUEUE", "queue": "prospecto-generate" },
+      { "binding": "SEND_QUEUE", "queue": "prospecto-send" }
+    ],
+    "consumers": [
+      {
+        "queue": "prospecto-generate",
+        "max_batch_size": 10,
+        "max_batch_timeout": 30,
+        "max_retries": 3,
+        "dead_letter_queue": "prospecto-generate-dlq"
+      },
+      {
+        "queue": "prospecto-send",
+        "max_batch_size": 10,
+        "max_batch_timeout": 30,
+        "max_retries": 3,
+        "dead_letter_queue": "prospecto-send-dlq"
+      }
+    ]
+  }
+}

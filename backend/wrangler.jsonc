@@ -1,0 +1,16 @@
+{
+  "name": "prospecto-backend",
+  "main": "src/index.ts",
+  "compatibility_date": "2024-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Hyperdrive binding — used in production to pool connections to PostgreSQL
+  // In local dev, wrangler uses localConnectionString directly (no Hyperdrive needed)
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "REPLACE_WITH_HYPERDRIVE_ID",
+      "localConnectionString": "postgresql://prospecto:prospecto@localhost:5432/prospecto"
+    }
+  ]
+}
