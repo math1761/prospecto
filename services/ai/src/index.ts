@@ -1,34 +1,15 @@
 import { Hono } from "hono";
+import type { AIProspect, AIPersona } from "@prospecto/types";
 
 type Env = {
   AI: Ai;
   AI_CACHE: KVNamespace;
 };
 
-type Prospect = {
-  id?: string;
-  name: string;
-  email: string;
-  company?: string;
-  title?: string;
-  website?: string;
-  location?: string;
-  industry?: string;
-  companySize?: string;
-  language?: string;
-  timezone?: string;
-  stackData?: string[];
-  extra?: Record<string, string>;
-};
+type Prospect = AIProspect;
+type Persona = AIPersona;
 
-type Persona = {
-  tone: string;
-  expertise: string;
-  writingStyle: string;
-  signature?: string;
-};
-
-const DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct";
+const DEFAULT_MODEL = "@cf/openai/gpt-oss-120b";
 
 // TTLs per endpoint category
 const TTL_SHORT = 3600;    // 1h  — email quality scores
@@ -53,6 +34,14 @@ function extractJson(text: string): unknown {
   if (match) {
     try { return JSON.parse(match[0]); } catch {}
   }
+  // Truncated JSON recovery — close open strings and braces
+  let recovered = clean;
+  const openQuotes = (recovered.match(/(?<!\\)"/g) ?? []).length;
+  if (openQuotes % 2 !== 0) recovered += '"';
+  const openBraces = (recovered.match(/{/g) ?? []).length;
+  const closeBraces = (recovered.match(/}/g) ?? []).length;
+  recovered += "}".repeat(Math.max(0, openBraces - closeBraces));
+  try { return JSON.parse(recovered); } catch {}
   throw new Error(`JSON parse failed: ${clean.slice(0, 200)}`);
 }
 
@@ -153,7 +142,7 @@ Respond with valid JSON only: { "subject": "...", "body": "..." }`;
     const result = await chat(c.env, [
       { role: "system", content: system },
       { role: "user", content: user },
-    ], { json: true });
+    ], { json: true, maxTokens: 1024 });
 
     return c.json({ subject: result.subject, body: result.body });
   } catch (e) {
@@ -469,6 +458,200 @@ Respond with JSON: { "a": "...", "b": "..." }`;
       { role: "system", content: system },
       { role: "user", content: user },
     ], { json: true, maxTokens: 100 });
+
+    return c.json(result);
+  } catch (e) {
+    return c.json({ error: String(e) }, 502);
+  }
+});
+
+// ─── Prompt coach (F21) ────────────────────────────────────────────────────────
+
+app.post("/prompt-coach", async (c) => {
+  const { subject, body, prospect } = await c.req.json<{
+    subject: string;
+    body: string;
+    prospect: Prospect;
+  }>();
+
+  const system = `You are a cold email coach. Analyze this email draft and provide:
+1. An overall quality score 0-100
+2. Breakdown by: personalisation (30), clarity (25), cta (25), tone (20)
+3. Up to 5 specific suggestions for improvement
+4. Up to 3 quick fixes: specific text ranges to replace with better alternatives
+
+Respond with JSON: {
+  "score": number,
+  "breakdown": { "personalisation": n, "clarity": n, "cta": n, "tone": n },
+  "suggestions": ["...", "..."],
+  "quickFixes": [{ "field": "subject"|"body", "range": [start, end], "replacement": "..." }]
+}`;
+
+  const user = `Prospect: ${buildProspectContext(prospect)}
+Subject: ${subject}
+Body: ${body}`;
+
+  try {
+    const result = await chat(c.env, [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ], { json: true, maxTokens: 300, ttl: TTL_SHORT });
+
+    return c.json(result);
+  } catch (e) {
+    return c.json({ error: String(e) }, 502);
+  }
+});
+
+// ─── Subject line lab (F25) ───────────────────────────────────────────────────
+
+app.post("/subject-lab", async (c) => {
+  const { body, prospect, count = 10 } = await c.req.json<{
+    body: string;
+    prospect: Prospect;
+    count?: number;
+  }>();
+
+  const strategies = [
+    "curiosity", "benefit-led", "question", "personalized", "urgent-mild",
+    "social-proof", "data-driven", "pattern-interrupt", "objection-preemptive", "short-punchy",
+  ];
+
+  const system = `You are a cold email subject line expert. Generate ${count} distinct subject line variants for the given email body and prospect.
+Each variant should use a different strategy from: ${strategies.join(", ")}.
+Rank each by predicted open rate (0-100).
+All under 50 chars. No spam words.
+
+Respond with JSON: {
+  "variants": [{ "subject": "...", "strategy": "...", "predictedOpenRate": number, "reasoning": "..." }]
+}
+Sort by predictedOpenRate descending.`;
+
+  const user = `Email body:\n${body}\n\nProspect: ${prospect.name} at ${prospect.company ?? "unknown"}`;
+
+  try {
+    const result = await chat(c.env, [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ], { json: true, maxTokens: 600, ttl: TTL_SHORT });
+
+    return c.json(result);
+  } catch (e) {
+    return c.json({ error: String(e) }, 502);
+  }
+});
+
+// ─── Campaign outcome predictor (F27) ─────────────────────────────────────────
+
+app.post("/predict-campaign", async (c) => {
+  const { prospectCount, avgScore, persona, templateStats, historicalBenchmarks } = await c.req.json<{
+    prospectCount: number;
+    avgScore: number;
+    persona?: Persona;
+    templateStats?: { openRate: number; replyRate: number; coachScore?: number };
+    historicalBenchmarks?: { avgOpenRate: number; avgReplyRate: number; avgConvRate: number };
+  }>();
+
+  const personaSection = persona
+    ? `\nPersona tone: ${persona.tone}, expertise: ${persona.expertise}`
+    : "";
+  const templateSection = templateStats
+    ? `\nTemplate stats: openRate=${templateStats.openRate}%, replyRate=${templateStats.replyRate}%`
+    : "";
+  const benchSection = historicalBenchmarks
+    ? `\nHistorical benchmarks: openRate=${historicalBenchmarks.avgOpenRate}%, replyRate=${historicalBenchmarks.avgReplyRate}%`
+    : "";
+
+  const system = `You are a B2B campaign performance analyst. Predict campaign outcome.
+Respond with JSON: {
+  "predictedOpenRate": number (0-100),
+  "predictedReplyRate": number (0-100),
+  "predictedConvRate": number (0-100),
+  "confidence": number (0-1),
+  "riskFactors": ["..."],
+  "suggestions": ["..."]
+}`;
+
+  const user = `Campaign: ${prospectCount} prospects, avg lead score ${avgScore}${personaSection}${templateSection}${benchSection}`;
+
+  try {
+    const result = await chat(c.env, [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ], { json: true, maxTokens: 250, ttl: TTL_MEDIUM });
+
+    return c.json(result);
+  } catch (e) {
+    return c.json({ error: String(e) }, 502);
+  }
+});
+
+// ─── Cadence optimizer (F30) ──────────────────────────────────────────────────
+
+app.post("/optimize-cadence", async (c) => {
+  const { campaignHistory, targetMetric = "reply_rate" } = await c.req.json<{
+    campaignHistory: Array<{
+      prospectCount: number;
+      touchCount: number;
+      avgDelayDays: number;
+      openRate: number;
+      replyRate: number;
+      conversionRate?: number;
+    }>;
+    targetMetric?: string;
+  }>();
+
+  const system = `You are a B2B outreach optimization analyst. Analyze campaign performance data and recommend optimal cadence.
+Respond with JSON: {
+  "recommendedTouches": number,
+  "recommendedDelays": [number],
+  "recommendedSendDays": ["Tuesday", "..."],
+  "recommendedSendWindow": { "start": "HH:MM", "end": "HH:MM" },
+  "confidence": number (0-1),
+  "reasoning": "...",
+  "topInsights": ["..."]
+}`;
+
+  const user = `Historical data (${campaignHistory.length} campaigns, target: ${targetMetric}):\n${
+    campaignHistory.map((c, i) =>
+      `#${i + 1}: ${c.touchCount} touches, ${c.avgDelayDays}d avg delay, open=${(c.openRate * 100).toFixed(1)}%, reply=${(c.replyRate * 100).toFixed(1)}%`
+    ).join("\n")
+  }`;
+
+  try {
+    const result = await chat(c.env, [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ], { json: true, maxTokens: 300, ttl: TTL_MEDIUM });
+
+    return c.json(result);
+  } catch (e) {
+    return c.json({ error: String(e) }, 502);
+  }
+});
+
+// ─── Re-engage email (F29) ───────────────────────────────────────────────────
+
+app.post("/reengage-email", async (c) => {
+  const { prospect, lastActivityDays, previousEmails } = await c.req.json<{
+    prospect: Prospect;
+    lastActivityDays: number | null;
+    previousEmails: Array<{ subject: string; sentAt: Date | null }>;
+  }>();
+
+  const system = `You are a warm re-engagement email writer. Write a brief email acknowledging the gap, offering new value, with a soft CTA.
+Rules: under 80 words, warm tone, no guilt-tripping, one clear value proposition.
+Respond with JSON: { "subject": "...", "body": "..." }`;
+
+  const user = `Prospect: ${buildProspectContext(prospect)}
+Days since last activity: ${lastActivityDays ?? "unknown"}
+Previous emails: ${previousEmails.map((e) => e.subject).join(", ") || "none"}`;
+
+  try {
+    const result = await chat(c.env, [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ], { json: true, maxTokens: 200 });
 
     return c.json(result);
   } catch (e) {

@@ -8,6 +8,13 @@
       "when": 1779137435057,
       "tag": "0000_strong_medusa",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1779140453460,
+      "tag": "0001_glamorous_the_renegades",
+      "breakpoints": true
     }
   ]
 }

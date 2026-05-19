@@ -7,6 +7,7 @@ import {
   sequenceEnrollments,
   prospects,
   emails,
+  prospectActivities,
 } from "../db/schema";
 
 
@@ -133,6 +134,15 @@ app.post("/:id/enroll", async (c) => {
     )
     .onConflictDoNothing()
     .returning();
+
+  for (const e of enrolled) {
+    await db.insert(prospectActivities).values({
+      id: crypto.randomUUID(),
+      prospectId: e.prospectId,
+      type: "enrolled",
+      meta: { sequenceId: seq[0].id },
+    });
+  }
 
   return c.json({ enrolled: enrolled.length });
 });

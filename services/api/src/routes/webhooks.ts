@@ -2,17 +2,23 @@ import { Hono } from "hono";
 import { eq } from "drizzle-orm";
 import { createDb, type Env } from "../db/client";
 import { webhookConfigs } from "../db/schema";
+import { internalFetch } from "../lib/internal-dispatch";
 
 
 // Supported outbound events
-export const WEBHOOK_EVENTS = [
+const WEBHOOK_EVENTS = [
   "prospect.status_changed",
   "prospect.replied",
+  "prospect.bounced",
+  "prospect.decay_flagged",
+  "prospect.note_added",
   "email.sent",
   "email.opened",
   "email.clicked",
   "sequence.completed",
   "import.completed",
+  "deliverability.checked",
+  "cadence.optimized",
 ] as const;
 
 const app = new Hono<{ Bindings: Env }>();
@@ -119,12 +125,11 @@ app.post("/inbound", async (c) => {
   const method = action === "update_status" ? "PATCH" : "POST";
   const body = method === "PATCH" ? JSON.stringify({ status: payload.status }) : "{}";
 
-  // Self-call via internal routing
-  const res = await fetch(`${c.env.API_BASE_URL}${route}`, {
+  const res = await internalFetch(route, {
     method,
     headers: { "Content-Type": "application/json" },
     body,
-  });
+  }, c.env);
 
   const data = await res.json();
   return c.json({ ok: res.ok, result: data });

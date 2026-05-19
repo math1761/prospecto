@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { eq, desc, sql } from "drizzle-orm";
 import { createDb, type Env } from "../db/client";
-import { campaigns, prospects, emails } from "../db/schema";
+import { campaigns, prospects, emails, templates, personas } from "../db/schema";
 
 import { audit } from "../lib/audit";
 
@@ -168,6 +168,77 @@ app.get("/:id/n8n-export", async (c) => {
       "Content-Disposition": `attachment; filename="n8n-${campaign.id}.json"`,
     },
   });
+});
+
+// ─── Campaign outcome prediction (F27) ────────────────────────────────────────
+
+app.get("/:id/prediction", async (c) => {
+  const db = createDb(c.env);
+  const campaignId = c.req.param("id");
+
+  const [campaign] = await db.select().from(campaigns).where(eq(campaigns.id, campaignId));
+  if (!campaign) return c.json({ error: "Not found" }, 404);
+
+  const [prospectStats] = await db
+    .select({
+      count: sql<number>`count(*)::int`,
+      avgScore: sql<number>`coalesce(avg(score), 0)::int`,
+    })
+    .from(prospects)
+    .where(eq(prospects.campaignId, campaignId));
+
+  let persona = null;
+  if (campaign.personaId) {
+    const [p] = await db.select().from(personas).where(eq(personas.id, campaign.personaId));
+    persona = p;
+  }
+
+  const templateStatsRows = await db
+    .select({
+      openRate: sql<number>`coalesce(avg(open_rate), 0)`,
+      replyRate: sql<number>`coalesce(avg(reply_rate), 0)`,
+    })
+    .from(templates)
+    .limit(1);
+
+  const [benchmarks] = await db
+    .select({
+      avgOpenRate: sql<number>`coalesce(avg(case when sent_at is not null then 1 else 0 end) * 100, 0)`,
+      avgReplyRate: sql<number>`coalesce(avg(case when replied_at is not null then 1 else 0 end) * 100, 0)`,
+    })
+    .from(emails);
+
+  const res = await c.env.AI_SERVICE.fetch("http://ai/predict-campaign", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      prospectCount: prospectStats.count,
+      avgScore: prospectStats.avgScore,
+      persona,
+      templateStats: templateStatsRows[0],
+      historicalBenchmarks: benchmarks,
+    }),
+  });
+
+  const prediction = await res.json<{
+    predictedOpenRate: number;
+    predictedReplyRate: number;
+    predictedConvRate: number;
+    confidence: number;
+    riskFactors: string[];
+    suggestions: string[];
+  }>();
+
+  await db
+    .update(campaigns)
+    .set({
+      predictedOpenRate: prediction.predictedOpenRate,
+      predictedReplyRate: prediction.predictedReplyRate,
+      predictedConvRate: prediction.predictedConvRate,
+    })
+    .where(eq(campaigns.id, campaignId));
+
+  return c.json(prediction);
 });
 
 export default app;

@@ -63,6 +63,12 @@ export const replySentimentEnum = pgEnum("reply_sentiment", [
   "out_of_office",
 ]);
 
+export const bounceClassEnum = pgEnum("bounce_class", [
+  "hard",
+  "soft",
+  "transient",
+]);
+
 // ─── Users ────────────────────────────────────────────────────────────────────
 
 export const users = pgTable("users", {
@@ -98,6 +104,11 @@ export const campaigns = pgTable("campaigns", {
   description: text("description"),
   status: campaignStatusEnum("status").default("draft").notNull(),
   personaId: text("persona_id").references(() => personas.id),
+  predictedOpenRate: real("predicted_open_rate"),
+  predictedReplyRate: real("predicted_reply_rate"),
+  predictedConvRate: real("predicted_conversion_rate"),
+  optimalTouchCount: integer("optimal_touch_count"),
+  optimalDelayDays: integer("optimal_delay_days"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -125,6 +136,9 @@ export const prospects = pgTable(
     sentiment: replySentimentEnum("sentiment"),
     stackData: jsonb("stack_data").$type<string[]>(), // detected tech stack
     enrichedAt: timestamp("enriched_at"),
+    lastActivityAt: timestamp("last_activity_at"),
+    decayScore: integer("decay_score").default(0),
+    decayStatus: text("decay_status"), // null | "active" | "stale" | "cold" | "archived"
     // Extra columns from CSV
     extra: jsonb("extra").$type<Record<string, string>>(),
     status: prospectStatusEnum("status").default("new").notNull(),
@@ -152,6 +166,8 @@ export const templates = pgTable("templates", {
   isDefault: boolean("is_default").default(false).notNull(),
   openRate: real("open_rate"),
   replyRate: real("reply_rate"),
+  avgQualityScore: real("avg_quality_score"),
+  coachScore: integer("coach_score"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -181,6 +197,11 @@ export const emails = pgTable(
     clickedAt: timestamp("clicked_at"),
     repliedAt: timestamp("replied_at"),
     replyBody: text("reply_body"),
+    messageId: text("message_id"),
+    inReplyTo: text("in_reply_to"),
+    references: text("references"),
+    bounceStatus: bounceClassEnum("bounce_status"),
+    bouncedAt: timestamp("bounced_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => [
@@ -384,6 +405,75 @@ export const verifications = pgTable("verifications", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
+// ─── Prospect Activities (F26 timeline) ──────────────────────────────────────
+
+export const prospectActivities = pgTable(
+  "prospect_activities",
+  {
+    id: text("id").primaryKey(),
+    prospectId: text("prospect_id")
+      .notNull()
+      .references(() => prospects.id, { onDelete: "cascade" }),
+    type: text("type").notNull(), // email_sent | email_opened | email_clicked | reply_received |
+    // status_changed | note_added | enrolled | bounced | scored | flagged_decay | decay_reengaged
+    emailId: text("email_id").references(() => emails.id),
+    meta: jsonb("meta"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    index("activities_prospect_idx").on(t.prospectId),
+    index("activities_type_idx").on(t.type),
+    index("activities_created_idx").on(t.createdAt),
+  ],
+);
+
+// ─── Bounce Events (F22 bounce intelligence) ─────────────────────────────────
+
+export const bounceEvents = pgTable(
+  "bounce_events",
+  {
+    id: text("id").primaryKey(),
+    emailId: text("email_id")
+      .notNull()
+      .references(() => emails.id, { onDelete: "cascade" }),
+    prospectId: text("prospect_id")
+      .notNull()
+      .references(() => prospects.id, { onDelete: "cascade" }),
+    bounceClass: bounceClassEnum("bounce_class").notNull(),
+    smtpCode: text("smtp_code"),
+    diagnosticCode: text("diagnostic_code"),
+    senderDomain: text("sender_domain"),
+    retryCount: integer("retry_count").default(0).notNull(),
+    nextRetryAt: timestamp("next_retry_at"),
+    resolvedAt: timestamp("resolved_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    index("bounces_email_idx").on(t.emailId),
+    index("bounces_prospect_idx").on(t.prospectId),
+    index("bounces_class_idx").on(t.bounceClass),
+  ],
+);
+
+// ─── Deliverability Scores (F24 scorecard) ───────────────────────────────────
+
+export const deliverabilityScores = pgTable(
+  "deliverability_scores",
+  {
+    id: text("id").primaryKey(),
+    domain: text("domain").notNull(),
+    overallScore: integer("overall_score").notNull(), // 0-100
+    spfStatus: text("spf_status"),
+    dkimStatus: text("dkim_status"),
+    dmarcStatus: text("dmarc_status"),
+    bounceRate: real("bounce_rate"),
+    complaintRate: real("complaint_rate"),
+    recommendations: jsonb("recommendations").$type<string[]>(),
+    checkedAt: timestamp("checked_at").defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex("deliverability_domain_idx").on(t.domain)],
+);
+
 // ─── Relations ────────────────────────────────────────────────────────────────
 
 export const campaignRelations = relations(campaigns, ({ many, one }) => ({
@@ -396,13 +486,27 @@ export const campaignRelations = relations(campaigns, ({ many, one }) => ({
 export const prospectRelations = relations(prospects, ({ many, one }) => ({
   emails: many(emails),
   enrollments: many(sequenceEnrollments),
+  activities: many(prospectActivities),
+  bounceEvents: many(bounceEvents),
   campaign: one(campaigns, { fields: [prospects.campaignId], references: [campaigns.id] }),
 }));
 
-export const emailRelations = relations(emails, ({ one }) => ({
+export const emailRelations = relations(emails, ({ one, many }) => ({
   prospect: one(prospects, { fields: [emails.prospectId], references: [prospects.id] }),
   campaign: one(campaigns, { fields: [emails.campaignId], references: [campaigns.id] }),
   template: one(templates, { fields: [emails.templateId], references: [templates.id] }),
+  activities: many(prospectActivities),
+  bounceEvent: one(bounceEvents, { fields: [emails.id], references: [bounceEvents.emailId] }),
+}));
+
+export const prospectActivityRelations = relations(prospectActivities, ({ one }) => ({
+  prospect: one(prospects, { fields: [prospectActivities.prospectId], references: [prospects.id] }),
+  email: one(emails, { fields: [prospectActivities.emailId], references: [emails.id] }),
+}));
+
+export const bounceEventRelations = relations(bounceEvents, ({ one }) => ({
+  email: one(emails, { fields: [bounceEvents.emailId], references: [emails.id] }),
+  prospect: one(prospects, { fields: [bounceEvents.prospectId], references: [prospects.id] }),
 }));
 
 export const sequenceRelations = relations(sequences, ({ many }) => ({

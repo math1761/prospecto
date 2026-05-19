@@ -1,19 +1,11 @@
 import { Hono } from "hono";
+import type { SendPayload } from "@prospecto/types";
 
 type Env = {
   RESEND_API_KEY: string;
   FROM_EMAIL: string;
   FROM_NAME: string;
   API_BASE_URL: string;
-};
-
-type SendPayload = {
-  to: string;
-  name: string;
-  subject: string;
-  body: string;
-  trackingId?: string;
-  unsubscribeUrl?: string;
 };
 
 const app = new Hono<{ Bindings: Env }>();
@@ -62,6 +54,10 @@ app.post("/send", async (c) => {
     headers["List-Unsubscribe"] = `<${payload.unsubscribeUrl}>`;
     headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click";
   }
+
+  if (payload.messageId) headers["Message-ID"] = payload.messageId;
+  if (payload.inReplyTo) headers["In-Reply-To"] = payload.inReplyTo;
+  if (payload.references) headers["References"] = payload.references;
 
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",

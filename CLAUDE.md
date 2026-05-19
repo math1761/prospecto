@@ -10,7 +10,7 @@ Monorepo — microservice architecture on Cloudflare:
 - `services/api/` — Hono API gateway · Drizzle ORM · PostgreSQL via Hyperdrive
 - `services/ai/` — Hono · OpenRouter calls · email generation + scoring
 - `services/mailer/` — Hono · Resend email dispatch · open tracking pixel
-- `docker-compose.yml` — local PostgreSQL (port 5432)
+- `docker-compose.yml` — local PostgreSQL (port 5436)
 
 ## Commands
 
@@ -23,7 +23,7 @@ pnpm dev                         # docker compose + workers + frontend
 pnpm dev:app                     # workers + frontend only (DB must already run)
 
 # Database (repo root)
-docker compose up -d             # PostgreSQL on localhost:5432
+docker compose up -d             # PostgreSQL on localhost:5436
 docker compose down
 
 # Frontend
@@ -121,7 +121,7 @@ API entry: `services/api/src/index.ts`. Routes in `services/api/src/routes/`. DB
 | Local | Docker PostgreSQL via `localConnectionString` in `services/api/wrangler.jsonc` |
 | Production | Cloudflare Hyperdrive — replace `REPLACE_WITH_HYPERDRIVE_ID` after `wrangler hyperdrive create` |
 
-Local DB: `postgresql://prospecto:prospecto@localhost:5432/prospecto`
+Local DB: `postgresql://prospecto:prospecto@localhost:5436/prospecto`
 
 ### Secrets (`.dev.vars` per service, never committed)
 - `services/ai/.dev.vars`: `OPENROUTER_API_KEY`

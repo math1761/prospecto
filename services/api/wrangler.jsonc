@@ -27,6 +27,9 @@
       "service": "prospecto-mailer"
     }
   ],
+  "triggers": {
+    "crons": ["0 3 * * *"]
+  },
   "vars": {
     "API_BASE_URL": "https://prospecto-api.REPLACE_WITH_YOUR_SUBDOMAIN.workers.dev"
   },

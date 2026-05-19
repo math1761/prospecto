@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { eq, desc } from "drizzle-orm";
 import { createDb, type Env } from "../db/client";
-import { templates, emails } from "../db/schema";
+import { templates, emails, prospects } from "../db/schema";
 import { getCached, setCache, invalidateCache, TTL_TEMPLATES } from "../lib/cache";
 
 const CACHE_KEY = "templates:list";
@@ -9,7 +9,7 @@ const CACHE_KEY = "templates:list";
 const app = new Hono<{ Bindings: Env }>();
 
 app.get("/", async (c) => {
-  const cached = await getCached<c.Response>(c.env, CACHE_KEY);
+  const cached = await getCached<any>(c.env, CACHE_KEY);
   if (cached) return c.json(cached);
 
   const db = createDb(c.env);
@@ -122,6 +122,64 @@ app.get("/:id/stats", async (c) => {
   }
 
   return c.json({ sent, opened, replied, openRate, replyRate });
+});
+
+// ─── AI Prompt Coach (F21) ────────────────────────────────────────────────────
+
+app.post("/:id/coach", async (c) => {
+  const db = createDb(c.env);
+  const [tmpl] = await db.select().from(templates).where(eq(templates.id, c.req.param("id")));
+  if (!tmpl) return c.json({ error: "Not found" }, 404);
+
+  const res = await c.env.AI_SERVICE.fetch("http://ai/prompt-coach", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      subject: tmpl.subjectPrompt,
+      body: tmpl.bodyPrompt,
+      prospect: { name: "Sample", email: "sample@example.com", company: "Acme Corp" },
+    }),
+  });
+
+  const result = await res.json<{
+    score: number;
+    breakdown: Record<string, number>;
+    suggestions: string[];
+    quickFixes: Array<{ field: string; range: number[]; replacement: string }>;
+  }>();
+
+  await db
+    .update(templates)
+    .set({ coachScore: result.score, avgQualityScore: result.score })
+    .where(eq(templates.id, tmpl.id));
+
+  return c.json(result);
+});
+
+app.post("/coach-live", async (c) => {
+  const { subject, body, prospectId } = await c.req.json<{
+    subject: string;
+    body: string;
+    prospectId?: string;
+  }>();
+
+  let prospect = { name: "Sample", email: "sample@example.com" };
+  if (prospectId) {
+    const db = createDb(c.env);
+    const [row] = await db.select().from(prospects).where(eq(prospects.id, prospectId));
+    if (row) prospect = row;
+  }
+
+  const res = await c.env.AI_SERVICE.fetch("http://ai/prompt-coach", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ subject, body, prospect }),
+  });
+
+  return new Response(res.body, {
+    status: res.status,
+    headers: { "Content-Type": "application/json" },
+  });
 });
 
 export default app;

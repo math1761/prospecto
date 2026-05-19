@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq, desc, isNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { createDb, type Env } from "../db/client";
 import { crmIntegrations, prospects } from "../db/schema";
 

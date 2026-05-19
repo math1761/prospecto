@@ -7,6 +7,9 @@ import { prospects, emails } from "./db/schema";
 import { eq } from "drizzle-orm";
 import type { GenerateJob, SendJob } from "./lib/jobs";
 import { createAuth, type Auth } from "./lib/auth";
+import { computeDecayScores } from "./lib/decay";
+import { dispatchEmail } from "./lib/email-dispatch";
+import { registerApp } from "./lib/internal-dispatch";
 import prospectsRoutes from "./routes/prospects";
 import campaignsRoutes from "./routes/campaigns";
 import emailsRoutes from "./routes/emails";
@@ -19,6 +22,12 @@ import webhooksRoutes from "./routes/webhooks";
 import schedulesRoutes from "./routes/schedules";
 import crmRoutes from "./routes/crm";
 import usersRoutes from "./routes/users";
+import activitiesRoutes from "./routes/activities";
+import bouncesRoutes from "./routes/bounces";
+import deliverabilityRoutes from "./routes/deliverability";
+import subjectLabRoutes from "./routes/subject-lab";
+import decayRoutes from "./routes/decay";
+import cadenceRoutes from "./routes/cadence";
 
 type Variables = { auth: Auth };
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -43,8 +52,8 @@ app.all("/api/auth/*", async (c) => {
   return auth.handler(c.req.raw);
 });
 
-// Public routes — unsubscribe, webhook delivery
-const publicPaths = ["/prospects/unsubscribe/", "/webhooks/deliver/"];
+// Public routes — unsubscribe, webhook delivery, bounce inbound
+const publicPaths = ["/prospects/unsubscribe/", "/bounces/inbound"];
 app.use("*", async (c, next) => {
   const path = new URL(c.req.url).pathname;
   if (publicPaths.some((p) => path.startsWith(p))) return next();
@@ -70,6 +79,14 @@ app.route("/webhooks", webhooksRoutes);
 app.route("/schedules", schedulesRoutes);
 app.route("/crm", crmRoutes);
 app.route("/users", usersRoutes);
+app.route("/activities", activitiesRoutes);
+app.route("/bounces", bouncesRoutes);
+app.route("/deliverability", deliverabilityRoutes);
+app.route("/subject-lab", subjectLabRoutes);
+app.route("/decay", decayRoutes);
+app.route("/cadence", cadenceRoutes);
+
+registerApp(app);
 
 // ─── Queue consumers ──────────────────────────────────────────────────────────
 
@@ -103,10 +120,8 @@ async function processGenerateJob(job: GenerateJob, env: Env): Promise<void> {
 }
 
 async function processSendJob(job: SendJob, env: Env): Promise<void> {
-  const res = await app.fetch(
-    new Request(`http://internal/emails/${job.emailId}/send`, { method: "POST" }),
-    env,
-  );
+  const db = createDb(env);
+  const res = await dispatchEmail(db, env, job.emailId);
   if (!res.ok) throw new Error(`Send failed: ${res.status} ${await res.text()}`);
 }
 
@@ -129,5 +144,10 @@ export default {
         }
       }),
     );
+  },
+
+  async scheduled(_event: ScheduledEvent, env: Env, _ctx: ExecutionContext): Promise<void> {
+    const db = createDb(env);
+    await computeDecayScores(db);
   },
 };

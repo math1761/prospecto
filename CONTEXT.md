@@ -61,6 +61,16 @@ Prospection tool. Upload a CSV of prospects, generate personalised outreach emai
 | 18 | **Reply sentiment dashboard** | Classify every reply as `positive / neutral / negative / out-of-office`; aggregate sentiment per campaign to detect messaging quality issues early |
 | 19 | **Warm-up mode** | Gradual ramp for new sending domains: auto-limits daily volume to a configurable curve (5 → 10 → 20 → 50…) until domain reputation is established |
 | 20 | **One-click n8n workflow export** | Export any campaign as a ready-to-import n8n workflow JSON — trigger on new CSV row, generate, send, update CRM — no n8n setup knowledge needed |
+| 21 | **AI prompt coach** | Live editor sidebar scores your template as you write; flags weak CTAs, spam triggers, generic phrases; suggests rewrites inline — iterate before you send |
+| 22 | **Bounce intelligence** | Auto-parse SMTP bounces, classify hard/soft/transient; retry soft bounces with exponential backoff, suppress hard bounces permanently — protect sender reputation |
+| 23 | **Email threading engine** | Follow-ups thread under the same conversation (References + In-Reply-To headers); prospects see continuity, not disconnected cold emails |
+| 24 | **Deliverability scorecard** | Single 0–100 score combining SPF/DKIM/DMARC + bounce rate + spam complaint rate + volume trend; alert before reputation drops |
+| 25 | **AI subject line lab** | Generate 10 subject variants ranked by predicted open rate; auto A/B test top 2 on 10% of list, send winner to remaining 90% |
+| 26 | **Prospect activity timeline** | Unified per-prospect feed: every open, click, reply, status change, note — full interaction history in one chronological view |
+| 27 | **Campaign outcome predictor** | Pre-send AI analysis of template quality + audience fit + historical performance → estimated open/reply/conversion rates before you hit send |
+| 28 | **Multi-client email preview** | One-click render in Gmail (desktop + mobile), Outlook, Apple Mail layouts; catch broken formatting before any prospect sees it |
+| 29 | **Contact decay engine** | Auto-flag stale prospects (no engagement in X days, job change signals); suggest archive or re-engage with a fresh angle |
+| 30 | **AI cadence optimizer** | Analyse past campaign performance per industry/segment; recommend optimal touch count, delays, and send times for new campaigns |
 
 ## Data flow
 
@@ -90,5 +100,8 @@ To be defined. At minimum: `name`, `email`, `company`. Additional columns feed t
 
 | Variable | Where | Purpose |
 |---|---|---|
-| `EMAIL_*` | backend (Wrangler secret) | Email provider credentials |
-| `N8N_WEBHOOK_SECRET` | backend (Wrangler secret) | Validate incoming n8n calls |
+| `OPENROUTER_API_KEY` | `services/ai/.dev.vars` | OpenRouter AI generation |
+| `RESEND_API_KEY` | `services/mailer/.dev.vars` | Resend email dispatch |
+| `FROM_EMAIL` | `services/mailer/.dev.vars` | Sender email address |
+| `FROM_NAME` | `services/mailer/.dev.vars` | Sender display name |
+| `API_BASE_URL` | `services/mailer/.dev.vars` | API base URL for tracking |

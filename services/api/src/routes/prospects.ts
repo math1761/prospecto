@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { eq, desc, or, ilike, and, inArray, sql } from "drizzle-orm";
 import { createDb, type Env } from "../db/client";
-import { prospects, importHistory, emails } from "../db/schema";
+import { prospects, importHistory, prospectActivities } from "../db/schema";
 import type { InferSelectModel } from "drizzle-orm";
 
 import { audit } from "../lib/audit";
@@ -202,6 +202,12 @@ app.patch("/:id", async (c) => {
       prospect: updated,
       previousStatus: prev[0].status,
     });
+    await db.insert(prospectActivities).values({
+      id: crypto.randomUUID(),
+      prospectId: updated.id,
+      type: "status_changed",
+      meta: { from: prev[0].status, to: data.status },
+    });
   }
 
   await invalidateCache(c.env, "analytics:");
@@ -271,6 +277,13 @@ app.post("/:id/score", async (c) => {
     .set({ score, updatedAt: new Date() })
     .where(eq(prospects.id, c.req.param("id")))
     .returning();
+
+  await db.insert(prospectActivities).values({
+    id: crypto.randomUUID(),
+    prospectId: updated.id,
+    type: "scored",
+    meta: { score, reasoning },
+  });
 
   return c.json({ score, reasoning, prospect: updated });
 });

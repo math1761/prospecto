@@ -3,6 +3,7 @@ import { eq, sql, count, and } from "drizzle-orm";
 import { createDb, type Env } from "../db/client";
 import { prospects, emails, campaigns, importHistory } from "../db/schema";
 import { getCached, setCache, TTL_ANALYTICS, TTL_DOMAIN_HEALTH } from "../lib/cache";
+import { checkSpf, checkDmarc, checkMx } from "../lib/deliverability";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -10,7 +11,7 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.get("/overview", async (c) => {
   const cacheKey = "analytics:overview";
-  const cached = await getCached<c.Response>(c.env, cacheKey);
+  const cached = await getCached<any>(c.env, cacheKey);
   if (cached) return c.json(cached);
 
   const db = createDb(c.env);
@@ -74,7 +75,7 @@ app.get("/overview", async (c) => {
 app.get("/campaign/:id", async (c) => {
   const campaignId = c.req.param("id");
   const cacheKey = `analytics:campaign:${campaignId}`;
-  const cached = await getCached<c.Response>(c.env, cacheKey);
+  const cached = await getCached<any>(c.env, cacheKey);
   if (cached) return c.json(cached);
 
   const db = createDb(c.env);
@@ -162,63 +163,20 @@ app.get("/domain-health", async (c) => {
 
   const allGood = [spf, dmarc, mx].every((c) => (c as any).ok);
 
+  const recommendations: string[] = [];
+  if (!spf.ok) recommendations.push("Add an SPF record to your DNS: v=spf1 include:yourmailprovider.com ~all");
+  if (!dmarc.ok) recommendations.push("Add a DMARC record: _dmarc TXT v=DMARC1; p=none; rua=mailto:dmarc@yourdomain.com");
+  if (!mx.ok) recommendations.push("No MX records found. Replies to your emails cannot be received.");
+
   const body = {
     domain,
     healthy: allGood,
     checks: { spf, dmarc, mx },
-    recommendations: buildRecommendations(spf as any, dmarc as any, mx as any),
+    recommendations,
   };
 
   await setCache(c.env, cacheKey, body, TTL_DOMAIN_HEALTH);
   return c.json(body);
 });
-
-async function checkSpf(domain: string) {
-  try {
-    const res = await fetch(`https://dns.google/resolve?name=${domain}&type=TXT`);
-    const data = await res.json<any>();
-    const txts: string[] = (data.Answer ?? []).flatMap((a: any) =>
-      (a.data as string).split(" "),
-    );
-    const spfRecord = txts.find((t) => t.startsWith("v=spf1"));
-    return { ok: !!spfRecord, record: spfRecord ?? null };
-  } catch {
-    return { ok: false, record: null };
-  }
-}
-
-async function checkDmarc(domain: string) {
-  try {
-    const res = await fetch(`https://dns.google/resolve?name=_dmarc.${domain}&type=TXT`);
-    const data = await res.json<any>();
-    const record = (data.Answer ?? [])[0]?.data as string | undefined;
-    return { ok: !!record?.startsWith("v=DMARC1"), record: record ?? null };
-  } catch {
-    return { ok: false, record: null };
-  }
-}
-
-async function checkMx(domain: string) {
-  try {
-    const res = await fetch(`https://dns.google/resolve?name=${domain}&type=MX`);
-    const data = await res.json<any>();
-    const records = (data.Answer ?? []).map((a: any) => a.data as string);
-    return { ok: records.length > 0, records };
-  } catch {
-    return { ok: false, records: [] };
-  }
-}
-
-function buildRecommendations(
-  spf: { ok: boolean },
-  dmarc: { ok: boolean },
-  mx: { ok: boolean },
-): string[] {
-  const recs: string[] = [];
-  if (!spf.ok) recs.push("Add an SPF record to your DNS: v=spf1 include:yourmailprovider.com ~all");
-  if (!dmarc.ok) recs.push("Add a DMARC record: _dmarc TXT v=DMARC1; p=none; rua=mailto:dmarc@yourdomain.com");
-  if (!mx.ok) recs.push("No MX records found. Replies to your emails cannot be received.");
-  return recs;
-}
 
 export default app;

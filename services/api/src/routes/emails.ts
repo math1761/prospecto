@@ -1,12 +1,14 @@
 import { Hono } from "hono";
-import { eq, desc, and, inArray } from "drizzle-orm";
+import { eq, desc, and } from "drizzle-orm";
 import { createDb, type Env } from "../db/client";
-import { emails, prospects } from "../db/schema";
+import { emails, prospects, prospectActivities } from "../db/schema";
 
 import { audit } from "../lib/audit";
 import { fireWebhooks } from "../lib/webhooks";
 import { spamCheck } from "../lib/spam";
 import { invalidateCache } from "../lib/cache";
+import { wrapForClient, toHtml } from "../lib/email-preview";
+import { dispatchEmail } from "../lib/email-dispatch";
 import type { SendJob } from "../lib/jobs";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -228,64 +230,9 @@ app.post("/:id/predict-send-time", async (c) => {
 
 app.post("/:id/send", async (c) => {
   const db = createDb(c.env);
-  const emailId = c.req.param("id");
-
-  const [row] = await db
-    .select({ email: emails, prospect: prospects })
-    .from(emails)
-    .innerJoin(prospects, eq(emails.prospectId, prospects.id))
-    .where(eq(emails.id, emailId));
-
-  if (!row) return c.json({ error: "Not found" }, 404);
-
-  // Block unsubscribed prospects
-  if (row.prospect.status === "unsubscribed") {
-    return c.json({ error: "Prospect is unsubscribed" }, 422);
-  }
-
-  // Optionally block low quality / high spam
-  if (row.email.qualityScore !== null && row.email.qualityScore < 30) {
-    return c.json({ error: "Email quality score too low to send", qualityScore: row.email.qualityScore }, 422);
-  }
-
-  // Build unsubscribe URL
-  const unsubscribeUrl = `${c.env.API_BASE_URL}/prospects/unsubscribe/${row.prospect.unsubscribeToken}`;
-
-  const res = await c.env.MAILER_SERVICE.fetch("http://mailer/send", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      to: row.prospect.email,
-      name: row.prospect.name,
-      subject: row.email.subject,
-      body: row.email.body,
-      trackingId: row.email.trackingId,
-      unsubscribeUrl,
-      apiBaseUrl: c.env.API_BASE_URL,
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.json();
-    return c.json({ error: "Mailer failed", detail: err }, 502);
-  }
-
-  const [updated] = await db
-    .update(emails)
-    .set({ sentAt: new Date() })
-    .where(eq(emails.id, emailId))
-    .returning();
-
-  await db
-    .update(prospects)
-    .set({ status: "contacted", updatedAt: new Date() })
-    .where(eq(prospects.id, row.email.prospectId));
-
-  await audit(db, "email", emailId, "sent", { to: row.prospect.email });
-  await fireWebhooks(db, "email.sent", { email: updated, prospect: row.prospect });
-  await invalidateCache(c.env, "analytics:");
-
-  return c.json(updated);
+  const res = await dispatchEmail(db, c.env, c.req.param("id"));
+  const data = await res.json();
+  return new Response(JSON.stringify(data), { status: res.status, headers: { "Content-Type": "application/json" } });
 });
 
 // ─── Bulk send ────────────────────────────────────────────────────────────────
@@ -321,6 +268,13 @@ app.get("/track/:trackingId/open", async (c) => {
 
   if (updated) {
     await fireWebhooks(db, "email.opened", { emailId: updated.id, prospectId: updated.prospectId });
+    await db.insert(prospectActivities).values({
+      id: crypto.randomUUID(),
+      prospectId: updated.prospectId,
+      emailId: updated.id,
+      type: "email_opened",
+    });
+    await db.update(prospects).set({ lastActivityAt: new Date() }).where(eq(prospects.id, updated.prospectId));
   }
 
   // Return 1x1 transparent GIF
@@ -349,6 +303,22 @@ app.get("/track/:trackingId/click", async (c) => {
       eq(emails.trackingId, c.req.param("trackingId")),
       eq(emails.clickedAt, null as any),
     ));
+
+  // Record click activity
+  const [clickedEmail] = await db
+    .select()
+    .from(emails)
+    .where(eq(emails.trackingId, c.req.param("trackingId")));
+  if (clickedEmail) {
+    await db.insert(prospectActivities).values({
+      id: crypto.randomUUID(),
+      prospectId: clickedEmail.prospectId,
+      emailId: clickedEmail.id,
+      type: "email_clicked",
+      meta: { url },
+    });
+    await db.update(prospects).set({ lastActivityAt: new Date() }).where(eq(prospects.id, clickedEmail.prospectId));
+  }
 
   return c.redirect(decodeURIComponent(url));
 });
@@ -386,7 +356,7 @@ app.post("/inbound-reply", async (c) => {
   // Update prospect status to replied + record sentiment
   await db
     .update(prospects)
-    .set({ status: "replied", sentiment, updatedAt: new Date() })
+    .set({ status: "replied", sentiment, updatedAt: new Date(), lastActivityAt: new Date() })
     .where(eq(prospects.id, prospect.id));
 
   // Mark matching email as replied
@@ -399,9 +369,47 @@ app.post("/inbound-reply", async (c) => {
 
   await audit(db, "prospect", prospect.id, "replied", { sentiment });
   await fireWebhooks(db, "prospect.replied", { prospect, sentiment, replyBody: body.text });
+
+  await db.insert(prospectActivities).values({
+    id: crypto.randomUUID(),
+    prospectId: prospect.id,
+    type: "reply_received",
+    meta: { sentiment, replyBody: body.text },
+  });
   await invalidateCache(c.env, "analytics:");
 
   return c.json({ ok: true, sentiment });
+});
+
+// ─── Multi-client email preview (F28) ──────────────────────────────────────────
+
+app.post("/:id/preview", async (c) => {
+  const db = createDb(c.env);
+  const [row] = await db.select().from(emails).where(eq(emails.id, c.req.param("id")));
+  if (!row) return c.json({ error: "Not found" }, 404);
+
+  const { clients } = await c.req.json<{ clients: string[] }>();
+  const html = toHtml(row.body);
+  const previews: Record<string, string> = {};
+  for (const client of (clients ?? ["gmail", "outlook", "apple_mail"])) {
+    previews[client] = wrapForClient(html, client);
+  }
+  return c.json({ previews });
+});
+
+app.post("/preview-raw", async (c) => {
+  const { subject, body, clients } = await c.req.json<{
+    subject: string;
+    body: string;
+    clients?: string[];
+  }>();
+
+  const html = toHtml(body);
+  const previews: Record<string, string> = {};
+  for (const client of (clients ?? ["gmail", "outlook", "apple_mail"])) {
+    previews[client] = wrapForClient(html, client);
+  }
+  return c.json({ previews });
 });
 
 export default app;
